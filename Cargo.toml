@@ -1,0 +1,19 @@
+[package]
+name = "my-gst-plugin"
+description = "Playground for a GST plugin"
+version = "0.1.0"
+authors = ["Alan Jeffrey <ajeffrey@mozilla.com>"]
+edition = "2018"
+repository = "https://github.com/asajeffrey/my-gst-plugin"
+
+[lib]
+name = "gstmyplugin"
+crate-type = ["cdylib"]
+
+[dependencies]
+glib = { version = "0.8", features = ["subclassing"] }
+gstreamer = { version = "0.14", features = ["subclassing"] }
+
+[build-dependencies]
+gst-plugin-version-helper = "0.1"
+
