@@ -1,4 +1,8 @@
+use element::MyElement;
+use glib::subclass::types::ObjectSubclass;
 use gstreamer::gst_plugin_define;
+
+mod element;
 
 gst_plugin_define!(
     myplugin,
@@ -12,6 +16,11 @@ gst_plugin_define!(
     env!("BUILD_REL_DATE")
 );
 
-fn plugin_init(_plugin: &gstreamer::Plugin) -> Result<(), glib::BoolError> {
-    Ok(())
+fn plugin_init(plugin: &gstreamer::Plugin) -> Result<(), glib::BoolError> {
+    gstreamer::Element::register(
+        Some(plugin),
+        "myelement",
+        gstreamer::Rank::None,
+        MyElement::get_type(),
+    )
 }
