@@ -4,15 +4,21 @@ use glib::subclass::object::ObjectImpl;
 use glib::subclass::simple::ClassStruct;
 use glib::subclass::types::ObjectSubclass;
 use gstreamer::gst_debug;
+use gstreamer::gst_element_error;
 use gstreamer::gst_info;
 use gstreamer::subclass::element::ElementClassSubclassExt;
 use gstreamer::subclass::element::ElementImpl;
 use gstreamer::subclass::ElementInstanceStruct;
+use gstreamer::Buffer;
+use gstreamer::BufferRef;
 use gstreamer::Caps;
 use gstreamer::CapsIntersectMode;
+use gstreamer::CoreError;
 use gstreamer::DebugCategory;
 use gstreamer::DebugColorFlags;
 use gstreamer::ErrorMessage;
+use gstreamer::FlowError;
+use gstreamer::FlowSuccess;
 use gstreamer::Fraction;
 use gstreamer::FractionRange;
 use gstreamer::IntRange;
@@ -25,6 +31,7 @@ use gstreamer_base::subclass::base_transform::BaseTransformImpl;
 use gstreamer_base::subclass::BaseTransformMode::NeverInPlace;
 use gstreamer_base::BaseTransform;
 use gstreamer_video::VideoFormat;
+use gstreamer_video::VideoFrameRef;
 use gstreamer_video::VideoInfo;
 
 use std::sync::Mutex;
@@ -191,5 +198,99 @@ impl BaseTransformImpl for MyElement {
         } else {
             Some(other_caps)
         }
+    }
+
+    fn transform(
+        &self,
+        element: &BaseTransform,
+        inbuf: &Buffer,
+        outbuf: &mut BufferRef,
+    ) -> Result<FlowSuccess, FlowError> {
+        let mut state_guard = self.state.lock().unwrap();
+        let state = state_guard.as_mut().ok_or_else(|| {
+            gst_element_error!(element, CoreError::Negotiation, ["Have no state yet"]);
+            FlowError::NotNegotiated
+        })?;
+
+        let in_frame = VideoFrameRef::from_buffer_ref_readable(inbuf.as_ref(), &state.in_info)
+            .ok_or_else(|| {
+                gst_element_error!(
+                    element,
+                    CoreError::Failed,
+                    ["Failed to map input buffer readable"]
+                );
+                FlowError::Error
+            })?;
+
+        let mut out_frame = VideoFrameRef::from_buffer_ref_writable(outbuf, &state.out_info)
+            .ok_or_else(|| {
+                gst_element_error!(
+                    element,
+                    CoreError::Failed,
+                    ["Failed to map output buffer writable"]
+                );
+                FlowError::Error
+            })?;
+
+        let width = in_frame.width() as usize;
+        let in_stride = in_frame.plane_stride()[0] as usize;
+        let in_data = in_frame.plane_data(0).unwrap();
+        let out_stride = out_frame.plane_stride()[0] as usize;
+        let out_format = out_frame.format();
+        let out_data = out_frame.plane_data_mut(0).unwrap();
+
+        if out_format == VideoFormat::Bgrx {
+            assert_eq!(in_data.len() % 4, 0);
+            assert_eq!(out_data.len() % 4, 0);
+            assert_eq!(out_data.len() / out_stride, in_data.len() / in_stride);
+
+            let in_line_bytes = width * 4;
+            let out_line_bytes = width * 4;
+
+            assert!(in_line_bytes <= in_stride);
+            assert!(out_line_bytes <= out_stride);
+
+            for (in_line, out_line) in in_data
+                .chunks_exact(in_stride)
+                .zip(out_data.chunks_exact_mut(out_stride))
+            {
+                for (in_p, out_p) in in_line[..in_line_bytes]
+                    .chunks_exact(4)
+                    .zip(out_line[..out_line_bytes].chunks_exact_mut(4))
+                {
+                    assert_eq!(out_p.len(), 4);
+
+                    out_p[0] = in_p[1];
+                    out_p[1] = in_p[1];
+                    out_p[2] = in_p[1];
+                    out_p[3] = in_p[3];
+                }
+            }
+        } else if out_format == VideoFormat::Gray8 {
+            assert_eq!(in_data.len() % 4, 0);
+            assert_eq!(out_data.len() / out_stride, in_data.len() / in_stride);
+
+            let in_line_bytes = width * 4;
+            let out_line_bytes = width;
+
+            assert!(in_line_bytes <= in_stride);
+            assert!(out_line_bytes <= out_stride);
+
+            for (in_line, out_line) in in_data
+                .chunks_exact(in_stride)
+                .zip(out_data.chunks_exact_mut(out_stride))
+            {
+                for (in_p, out_p) in in_line[..in_line_bytes]
+                    .chunks_exact(4)
+                    .zip(out_line[..out_line_bytes].iter_mut())
+                {
+                    *out_p = in_p[1];
+                }
+            }
+        } else {
+            unimplemented!();
+        }
+
+        Ok(FlowSuccess::Ok)
     }
 }
