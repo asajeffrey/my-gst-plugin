@@ -51,6 +51,44 @@ impl ObjectSubclass for MyElement {
         );
 
         klass.configure(NeverInPlace, false, false);
+
+        let src_caps = Caps::new_simple(
+            "video/x-raw",
+            &[
+                (
+                    "format",
+                    &List::new(&[
+                        &VideoFormat::Bgrx.to_string(),
+                        &VideoFormat::Gray8.to_string(),
+                    ]),
+                ),
+                ("width", &IntRange::<i32>::new(0, std::i32::MAX)),
+                ("height", &IntRange::<i32>::new(0, std::i32::MAX)),
+                (
+                    "framerate",
+                    &FractionRange::new(Fraction::new(0, 1), Fraction::new(std::i32::MAX, 1)),
+                ),
+            ],
+        );
+        let src_pad_template =
+            PadTemplate::new("src", PadDirection::Src, PadPresence::Always, &src_caps).unwrap();
+        klass.add_pad_template(src_pad_template);
+
+        let sink_caps = Caps::new_simple(
+            "video/x-raw",
+            &[
+                ("format", &VideoFormat::Bgrx.to_string()),
+                ("width", &IntRange::<i32>::new(0, std::i32::MAX)),
+                ("height", &IntRange::<i32>::new(0, std::i32::MAX)),
+                (
+                    "framerate",
+                    &FractionRange::new(Fraction::new(0, 1), Fraction::new(std::i32::MAX, 1)),
+                ),
+            ],
+        );
+        let sink_pad_template =
+            PadTemplate::new("sink", PadDirection::Sink, PadPresence::Always, &sink_caps).unwrap();
+        klass.add_pad_template(sink_pad_template);
     }
 
     glib_object_subclass!();

@@ -14,6 +14,7 @@ crate-type = ["cdylib"]
 glib = { version = "0.8", features = ["subclassing"] }
 gstreamer = { version = "0.14", features = ["subclassing"] }
 gstreamer-base = { version = "0.14", features = ["subclassing"] }
+gstreamer-video = { version = "0.14", features = ["subclassing"] }
 
 [build-dependencies]
 gst-plugin-version-helper = "0.1"
