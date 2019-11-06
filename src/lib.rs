@@ -1,7 +1,9 @@
 use glib::subclass::types::ObjectSubclass;
 use gstreamer::gst_plugin_define;
+use mysrc::MySrc;
 use mytransform::MyTransform;
 
+mod mysrc;
 mod mytransform;
 
 gst_plugin_define!(
@@ -22,5 +24,12 @@ fn plugin_init(plugin: &gstreamer::Plugin) -> Result<(), glib::BoolError> {
         "mytransform",
         gstreamer::Rank::None,
         MyTransform::get_type(),
-    )
+    )?;
+    gstreamer::Element::register(
+        Some(plugin),
+        "mysrc",
+        gstreamer::Rank::None,
+        MySrc::get_type(),
+    )?;
+    Ok(())
 }
