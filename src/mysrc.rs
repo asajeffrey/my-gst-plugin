@@ -5,14 +5,19 @@ use glib::subclass::object::ObjectImpl;
 use glib::subclass::simple::ClassStruct;
 use glib::subclass::types::ObjectSubclass;
 use gstreamer::gst_debug;
+use gstreamer::gst_element_error;
 use gstreamer::gst_loggable_error;
 use gstreamer::subclass::element::ElementClassSubclassExt;
 use gstreamer::subclass::element::ElementImpl;
 use gstreamer::subclass::ElementInstanceStruct;
+use gstreamer::BufferRef;
 use gstreamer::Caps;
+use gstreamer::CoreError;
 use gstreamer::DebugCategory;
 use gstreamer::DebugColorFlags;
 use gstreamer::ErrorMessage;
+use gstreamer::FlowError;
+use gstreamer::FlowSuccess;
 use gstreamer::Fraction;
 use gstreamer::FractionRange;
 use gstreamer::IntRange;
@@ -23,6 +28,7 @@ use gstreamer::PadTemplate;
 use gstreamer_base::subclass::base_src::BaseSrcImpl;
 use gstreamer_base::BaseSrc;
 use gstreamer_video::VideoFormat;
+use gstreamer_video::VideoFrameRef;
 use gstreamer_video::VideoInfo;
 
 use std::sync::Mutex;
@@ -53,7 +59,7 @@ impl ObjectSubclass for MySrc {
             env!("CARGO_PKG_AUTHORS"),
         );
 
-        let sink_caps = Caps::new_simple(
+        let src_caps = Caps::new_simple(
             "video/x-raw",
             &[
                 ("format", &VideoFormat::Bgrx.to_string()),
@@ -65,9 +71,9 @@ impl ObjectSubclass for MySrc {
                 ),
             ],
         );
-        let sink_pad_template =
-            PadTemplate::new("sink", PadDirection::Sink, PadPresence::Always, &sink_caps).unwrap();
-        klass.add_pad_template(sink_pad_template);
+        let src_pad_template =
+            PadTemplate::new("src", PadDirection::Src, PadPresence::Always, &src_caps).unwrap();
+        klass.add_pad_template(src_pad_template);
     }
 
     glib_object_subclass!();
@@ -88,9 +94,31 @@ impl BaseSrcImpl for MySrc {
         Ok(())
     }
 
-    fn stop(&self, src: &BaseSrc) -> Result<(), ErrorMessage> {
-        let _ = self.out_info.lock().unwrap().take();
-        gst_debug!(self.cat, obj: src, "Stopped");
-        Ok(())
+    fn fill(
+        &self,
+        src: &BaseSrc,
+        offset: u64,
+        length: u32,
+        buffer: &mut BufferRef,
+    ) -> Result<FlowSuccess, FlowError> {
+        let out_guard = self.out_info.lock().map_err(|_| {
+            gst_element_error!(src, CoreError::Negotiation, ["Lock poisoned"]);
+            FlowError::NotNegotiated
+        })?;
+        let out_info = out_guard.as_ref().ok_or_else(|| {
+            gst_element_error!(src, CoreError::Negotiation, ["Caps not set yet"]);
+            FlowError::NotNegotiated
+        })?;
+        let mut out_frame =
+            VideoFrameRef::from_buffer_ref_writable(buffer, out_info).ok_or_else(|| {
+                gst_element_error!(
+                    src,
+                    CoreError::Failed,
+                    ["Failed to map output buffer writable"]
+                );
+                FlowError::Error
+            })?;
+
+        Ok(FlowSuccess::Ok)
     }
 }
