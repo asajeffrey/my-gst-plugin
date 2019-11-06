@@ -22,7 +22,6 @@ use gstreamer::FlowSuccess;
 use gstreamer::Fraction;
 use gstreamer::FractionRange;
 use gstreamer::IntRange;
-use gstreamer::List;
 use gstreamer::PadDirection;
 use gstreamer::PadPresence;
 use gstreamer::PadTemplate;
@@ -76,13 +75,7 @@ impl ObjectSubclass for MyElement {
         let src_caps = Caps::new_simple(
             "video/x-raw",
             &[
-                (
-                    "format",
-                    &List::new(&[
-                        &VideoFormat::Bgrx.to_string(),
-                        &VideoFormat::Gray8.to_string(),
-                    ]),
-                ),
+                ("format", &VideoFormat::Bgrx.to_string()),
                 ("width", &IntRange::<i32>::new(0, std::i32::MAX)),
                 ("height", &IntRange::<i32>::new(0, std::i32::MAX)),
                 (
@@ -260,31 +253,10 @@ impl BaseTransformImpl for MyElement {
                 {
                     assert_eq!(out_p.len(), 4);
 
-                    out_p[0] = in_p[1];
-                    out_p[1] = in_p[1];
-                    out_p[2] = in_p[1];
+                    out_p[0] = in_p[0] / 2;
+                    out_p[1] = in_p[1] / 2 + 127;
+                    out_p[2] = in_p[2] / 2;
                     out_p[3] = in_p[3];
-                }
-            }
-        } else if out_format == VideoFormat::Gray8 {
-            assert_eq!(in_data.len() % 4, 0);
-            assert_eq!(out_data.len() / out_stride, in_data.len() / in_stride);
-
-            let in_line_bytes = width * 4;
-            let out_line_bytes = width;
-
-            assert!(in_line_bytes <= in_stride);
-            assert!(out_line_bytes <= out_stride);
-
-            for (in_line, out_line) in in_data
-                .chunks_exact(in_stride)
-                .zip(out_data.chunks_exact_mut(out_stride))
-            {
-                for (in_p, out_p) in in_line[..in_line_bytes]
-                    .chunks_exact(4)
-                    .zip(out_line[..out_line_bytes].iter_mut())
-                {
-                    *out_p = in_p[1];
                 }
             }
         } else {
