@@ -8,7 +8,7 @@ Build with `cargo build --release`
 
 Run with `GST_PLUGIN_PATH=target/release gst-launch-1.0 videotestsrc ! mytransform ! videoconvert ! autovideosink`
 
-![Sickly green test card](GST_PLUGIN_PATH=target/release gst-launch-1.0 playbin uri=https://download.blender.org/peach/trailer/trailer_400p.ogg video-filter=mytransform)
+![Sickly green test card](https://user-images.githubusercontent.com/403333/68335528-3dd08880-00a2-11ea-8ff2-5a63858b81e3.png)
 
 or with `GST_PLUGIN_PATH=target/release gst-launch-1.0 playbin uri=https://download.blender.org/peach/trailer/trailer_400p.ogg video-filter=mytransform`
 
