@@ -1,23 +1,35 @@
+use glib::glib_bool_error;
 use glib::glib_object_impl;
 use glib::glib_object_subclass;
 use glib::subclass::object::ObjectImpl;
 use glib::subclass::simple::ClassStruct;
 use glib::subclass::types::ObjectSubclass;
+use gstreamer::gst_debug;
+use gstreamer::gst_loggable_error;
 use gstreamer::subclass::element::ElementClassSubclassExt;
 use gstreamer::subclass::element::ElementImpl;
 use gstreamer::subclass::ElementInstanceStruct;
 use gstreamer::Caps;
+use gstreamer::DebugCategory;
+use gstreamer::DebugColorFlags;
 use gstreamer::Fraction;
 use gstreamer::FractionRange;
 use gstreamer::IntRange;
+use gstreamer::LoggableError;
 use gstreamer::PadDirection;
 use gstreamer::PadPresence;
 use gstreamer::PadTemplate;
 use gstreamer_base::subclass::base_src::BaseSrcImpl;
 use gstreamer_base::BaseSrc;
 use gstreamer_video::VideoFormat;
+use gstreamer_video::VideoInfo;
 
-pub struct MySrc {}
+use std::sync::Mutex;
+
+pub struct MySrc {
+    cat: DebugCategory,
+    out_info: Mutex<Option<VideoInfo>>,
+}
 
 impl ObjectSubclass for MySrc {
     const NAME: &'static str = "MySrc";
@@ -26,7 +38,10 @@ impl ObjectSubclass for MySrc {
     type Class = ClassStruct<Self>;
 
     fn new() -> Self {
-        Self {}
+        Self {
+            cat: DebugCategory::new("mysrc", DebugColorFlags::empty(), Some("My src by me")),
+            out_info: Mutex::new(None),
+        }
     }
 
     fn class_init(klass: &mut ClassStruct<Self>) {
@@ -63,4 +78,12 @@ impl ObjectImpl for MySrc {
 
 impl ElementImpl for MySrc {}
 
-impl BaseSrcImpl for MySrc {}
+impl BaseSrcImpl for MySrc {
+    fn set_caps(&self, src: &BaseSrc, outcaps: &Caps) -> Result<(), LoggableError> {
+        let out_info = VideoInfo::from_caps(outcaps)
+            .ok_or_else(|| gst_loggable_error!(self.cat, "Failed to get video info"))?;
+        gst_debug!(self.cat, obj: src, "Configured for caps {}", outcaps);
+        *self.out_info.lock().unwrap() = Some(out_info);
+        Ok(())
+    }
+}
