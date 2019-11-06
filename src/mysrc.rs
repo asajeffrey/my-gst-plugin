@@ -12,6 +12,7 @@ use gstreamer::subclass::ElementInstanceStruct;
 use gstreamer::Caps;
 use gstreamer::DebugCategory;
 use gstreamer::DebugColorFlags;
+use gstreamer::ErrorMessage;
 use gstreamer::Fraction;
 use gstreamer::FractionRange;
 use gstreamer::IntRange;
@@ -84,6 +85,12 @@ impl BaseSrcImpl for MySrc {
             .ok_or_else(|| gst_loggable_error!(self.cat, "Failed to get video info"))?;
         gst_debug!(self.cat, obj: src, "Configured for caps {}", outcaps);
         *self.out_info.lock().unwrap() = Some(out_info);
+        Ok(())
+    }
+
+    fn stop(&self, src: &BaseSrc) -> Result<(), ErrorMessage> {
+        let _ = self.out_info.lock().unwrap().take();
+        gst_debug!(self.cat, obj: src, "Stopped");
         Ok(())
     }
 }
