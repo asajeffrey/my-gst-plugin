@@ -40,13 +40,13 @@ struct State {
     out_info: VideoInfo,
 }
 
-pub struct MyElement {
+pub struct MyTransform {
     cat: DebugCategory,
     state: Mutex<Option<State>>,
 }
 
-impl ObjectSubclass for MyElement {
-    const NAME: &'static str = "MyElement";
+impl ObjectSubclass for MyTransform {
+    const NAME: &'static str = "MyTransform";
     type ParentType = BaseTransform;
     type Instance = ElementInstanceStruct<Self>;
     type Class = ClassStruct<Self>;
@@ -54,9 +54,9 @@ impl ObjectSubclass for MyElement {
     fn new() -> Self {
         Self {
             cat: DebugCategory::new(
-                "myelement",
+                "mytransform",
                 DebugColorFlags::empty(),
-                Some("My element by me"),
+                Some("My transform by me"),
             ),
             state: Mutex::new(None),
         }
@@ -64,7 +64,7 @@ impl ObjectSubclass for MyElement {
 
     fn class_init(klass: &mut ClassStruct<Self>) {
         klass.set_metadata(
-            "My Element By Me",
+            "My Transform By Me",
             "Filter/Effect/Converter/Video",
             "Does stuff",
             env!("CARGO_PKG_AUTHORS"),
@@ -108,14 +108,14 @@ impl ObjectSubclass for MyElement {
     glib_object_subclass!();
 }
 
-impl ObjectImpl for MyElement {
+impl ObjectImpl for MyTransform {
     glib_object_impl!();
 }
 
-impl ElementImpl for MyElement {}
+impl ElementImpl for MyTransform {}
 
-impl BaseTransformImpl for MyElement {
-    fn set_caps(&self, element: &BaseTransform, incaps: &Caps, outcaps: &Caps) -> bool {
+impl BaseTransformImpl for MyTransform {
+    fn set_caps(&self, transform: &BaseTransform, incaps: &Caps, outcaps: &Caps) -> bool {
         let in_info = match VideoInfo::from_caps(incaps) {
             None => return false,
             Some(info) => info,
@@ -126,7 +126,7 @@ impl BaseTransformImpl for MyElement {
         };
         gst_debug!(
             self.cat,
-            obj: element,
+            obj: transform,
             "Configured for caps {} to {}",
             incaps,
             outcaps
@@ -135,19 +135,19 @@ impl BaseTransformImpl for MyElement {
         true
     }
 
-    fn stop(&self, element: &BaseTransform) -> Result<(), ErrorMessage> {
+    fn stop(&self, transform: &BaseTransform) -> Result<(), ErrorMessage> {
         let _ = self.state.lock().unwrap().take();
-        gst_info!(self.cat, obj: element, "Stopped");
+        gst_info!(self.cat, obj: transform, "Stopped");
         Ok(())
     }
 
-    fn get_unit_size(&self, _element: &BaseTransform, caps: &Caps) -> Option<usize> {
+    fn get_unit_size(&self, _transform: &BaseTransform, caps: &Caps) -> Option<usize> {
         VideoInfo::from_caps(caps).map(|info| info.size())
     }
 
     fn transform_caps(
         &self,
-        element: &BaseTransform,
+        transform: &BaseTransform,
         direction: PadDirection,
         caps: &Caps,
         filter: Option<&Caps>,
@@ -179,7 +179,7 @@ impl BaseTransformImpl for MyElement {
 
         gst_debug!(
             self.cat,
-            obj: element,
+            obj: transform,
             "Transformed caps from {} to {} in direction {:?}",
             caps,
             other_caps,
@@ -195,20 +195,20 @@ impl BaseTransformImpl for MyElement {
 
     fn transform(
         &self,
-        element: &BaseTransform,
+        transform: &BaseTransform,
         inbuf: &Buffer,
         outbuf: &mut BufferRef,
     ) -> Result<FlowSuccess, FlowError> {
         let mut state_guard = self.state.lock().unwrap();
         let state = state_guard.as_mut().ok_or_else(|| {
-            gst_element_error!(element, CoreError::Negotiation, ["Have no state yet"]);
+            gst_element_error!(transform, CoreError::Negotiation, ["Have no state yet"]);
             FlowError::NotNegotiated
         })?;
 
         let in_frame = VideoFrameRef::from_buffer_ref_readable(inbuf.as_ref(), &state.in_info)
             .ok_or_else(|| {
                 gst_element_error!(
-                    element,
+                    transform,
                     CoreError::Failed,
                     ["Failed to map input buffer readable"]
                 );
@@ -218,7 +218,7 @@ impl BaseTransformImpl for MyElement {
         let mut out_frame = VideoFrameRef::from_buffer_ref_writable(outbuf, &state.out_info)
             .ok_or_else(|| {
                 gst_element_error!(
-                    element,
+                    transform,
                     CoreError::Failed,
                     ["Failed to map output buffer writable"]
                 );

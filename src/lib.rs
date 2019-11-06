@@ -1,8 +1,8 @@
-use element::MyElement;
 use glib::subclass::types::ObjectSubclass;
 use gstreamer::gst_plugin_define;
+use mytransform::MyTransform;
 
-mod element;
+mod mytransform;
 
 gst_plugin_define!(
     myplugin,
@@ -19,8 +19,8 @@ gst_plugin_define!(
 fn plugin_init(plugin: &gstreamer::Plugin) -> Result<(), glib::BoolError> {
     gstreamer::Element::register(
         Some(plugin),
-        "myelement",
+        "mytransform",
         gstreamer::Rank::None,
-        MyElement::get_type(),
+        MyTransform::get_type(),
     )
 }
