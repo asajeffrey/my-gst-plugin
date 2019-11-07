@@ -12,10 +12,16 @@ name = "gstmyplugin"
 crate-type = ["cdylib"]
 
 [dependencies]
+crossbeam-channel = "0.4"
+euclid = "0.20"
 glib = { version = "0.8", features = ["subclassing"] }
 gstreamer = { version = "0.14", features = ["subclassing"] }
 gstreamer-base = { version = "0.14", features = ["subclassing"] }
+gstreamer-gl = { version = "0.14", features = ["v1_16"] }
 gstreamer-video = { version = "0.14", features = ["subclassing"] }
+sparkle = "0.1"
+surfman = { version = "0.1", features = ["sm-osmesa"] }
+surfman-chains = "0.1"
 
 [build-dependencies]
 gst-plugin-version-helper = "0.1"
