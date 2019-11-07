@@ -15,7 +15,6 @@ use gstreamer::Caps;
 use gstreamer::CoreError;
 use gstreamer::DebugCategory;
 use gstreamer::DebugColorFlags;
-use gstreamer::ErrorMessage;
 use gstreamer::FlowError;
 use gstreamer::FlowSuccess;
 use gstreamer::Fraction;
@@ -32,9 +31,11 @@ use gstreamer_video::VideoFrameRef;
 use gstreamer_video::VideoInfo;
 
 use std::sync::Mutex;
+use std::time::Instant;
 
 pub struct MySrc {
     cat: DebugCategory,
+    start: Instant,
     out_info: Mutex<Option<VideoInfo>>,
 }
 
@@ -47,6 +48,7 @@ impl ObjectSubclass for MySrc {
     fn new() -> Self {
         Self {
             cat: DebugCategory::new("mysrc", DebugColorFlags::empty(), Some("My src by me")),
+            start: Instant::now(),
             out_info: Mutex::new(None),
         }
     }
@@ -63,11 +65,11 @@ impl ObjectSubclass for MySrc {
             "video/x-raw",
             &[
                 ("format", &VideoFormat::Bgrx.to_string()),
-                ("width", &IntRange::<i32>::new(0, std::i32::MAX)),
-                ("height", &IntRange::<i32>::new(0, std::i32::MAX)),
+                ("width", &IntRange::<i32>::new(512, 1024)),
+                ("height", &IntRange::<i32>::new(512, 1024)),
                 (
                     "framerate",
-                    &FractionRange::new(Fraction::new(0, 1), Fraction::new(std::i32::MAX, 1)),
+                    &FractionRange::new(Fraction::new(25, 1), Fraction::new(120, 1)),
                 ),
             ],
         );
@@ -97,8 +99,8 @@ impl BaseSrcImpl for MySrc {
     fn fill(
         &self,
         src: &BaseSrc,
-        offset: u64,
-        length: u32,
+        _offset: u64,
+        _length: u32,
         buffer: &mut BufferRef,
     ) -> Result<FlowSuccess, FlowError> {
         let out_guard = self.out_info.lock().map_err(|_| {
@@ -118,6 +120,43 @@ impl BaseSrcImpl for MySrc {
                 );
                 FlowError::Error
             })?;
+        let height = out_frame.height() as usize;
+        let width = out_frame.width() as usize;
+        let stride = out_frame.plane_stride()[0] as usize;
+        let format = out_frame.format();
+        let data = out_frame.plane_data_mut(0).unwrap();
+        gst_debug!(
+            self.cat,
+            obj: src,
+            "Filling mysrc buffer {}x{} {:?}",
+            width,
+            height,
+            format
+        );
+
+        let millis = self.start.elapsed().subsec_millis();
+        let brightness = if millis < 500 {
+            millis / 2
+        } else {
+            (1000 - millis) / 2
+        } as u8;
+
+        if format == VideoFormat::Bgrx {
+            assert_eq!(data.len() % 4, 0);
+            let line_bytes = width * 4;
+            assert!(line_bytes <= stride);
+
+            for line in data.chunks_exact_mut(stride) {
+                for pixel in line[..line_bytes].chunks_exact_mut(4) {
+                    pixel[0] = brightness;
+                    pixel[1] = brightness / 2;
+                    pixel[2] = brightness / 4;
+                    pixel[3] = 0;
+                }
+            }
+        } else {
+            unimplemented!();
+        }
 
         Ok(FlowSuccess::Ok)
     }
