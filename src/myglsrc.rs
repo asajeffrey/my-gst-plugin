@@ -1,7 +1,7 @@
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
 
-use euclid::Size2D;
+use euclid::default::Size2D;
 
 use glib::glib_bool_error;
 use glib::glib_object_impl;
@@ -38,6 +38,7 @@ use gstreamer_video::VideoFrameRef;
 use gstreamer_video::VideoInfo;
 
 use sparkle::gl;
+use sparkle::gl::Gl;
 
 use surfman::platform::generic::universal::context::Context;
 use surfman::platform::generic::universal::device::Device;
@@ -46,6 +47,7 @@ use surfman::SurfaceAccess;
 use surfman_chains::SwapChain;
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Instant;
@@ -54,6 +56,38 @@ pub struct MyGLSrc {
     cat: DebugCategory,
     sender: Sender<MyGLMsg>,
     swap_chain: SwapChain,
+    info: Mutex<Option<VideoInfo>>,
+}
+
+struct MyGfx {
+    device: Device,
+    context: Context,
+    gl: Rc<Gl>,
+}
+
+impl MyGfx {
+    fn new() -> MyGfx {
+        let connection = surfman::Connection::new().expect("Failed to create connection");
+        let adapter = surfman::Adapter::default().expect("Failed to create adapter");
+        let mut device =
+            surfman::Device::new(&connection, &adapter).expect("Failed to create device");
+        let descriptor = device
+            .create_context_descriptor(&ATTRIBUTES)
+            .expect("Failed to create descriptor");
+        let context = device
+            .create_context(&descriptor)
+            .expect("Failed to create context");
+        let device = Device::Hardware(device);
+        let context = Context::Hardware(context);
+        let gl = Gl::gl_fns(gl::ffi_gl::Gl::load_with(|s| {
+            device.get_proc_address(&context, s)
+        }));
+        Self {
+            device,
+            context,
+            gl,
+        }
+    }
 }
 
 const GL_VERSION: surfman::GLVersion = surfman::GLVersion { major: 4, minor: 0 };
@@ -64,67 +98,80 @@ const ATTRIBUTES: surfman::ContextAttributes = surfman::ContextAttributes {
 };
 
 thread_local! {
-    static SURFMAN: RefCell<(Device, Context)> = {
-        let connection = surfman::Connection::new().expect("Failed to create connection");
-        let adapter  = surfman::Adapter::default().expect("Failed to create adapter");
-    let mut device = surfman::Device::new(&connection, &adapter).expect("Failed to create device");
-        let descriptor = device.create_context_descriptor(&ATTRIBUTES).expect("Failed to create descriptor");
-    let context = device.create_context(&descriptor).expect("Failed to create context");
-    RefCell::new((Device::Hardware(device), Context::Hardware(context)))
-    };
+    static GFX: RefCell<MyGfx> = RefCell::new(MyGfx::new());
 }
 
 enum MyGLMsg {
     GetSwapChain(Sender<SwapChain>),
-    SetVideoInfo(VideoInfo),
+    Resize(Size2D<i32>),
+    Heartbeat,
 }
 
 struct MyGLThread {
     cat: DebugCategory,
     receiver: Receiver<MyGLMsg>,
     swap_chain: SwapChain,
-    info: Option<VideoInfo>,
 }
 
 impl MyGLThread {
     fn new(cat: DebugCategory, receiver: Receiver<MyGLMsg>) -> Self {
-        SURFMAN.with(|surfman| {
-            let (ref mut device, ref mut context) = &mut *surfman.borrow_mut();
+        GFX.with(|gfx| {
+            let mut gfx = gfx.borrow_mut();
+            let gfx = &mut *gfx;
             let access = SurfaceAccess::GPUCPU;
             let size = Size2D::new(500, 500);
-            let swap_chain = SwapChain::create_detached(device, context, access, size)
-                .expect("Failed to create swap chain");
-            let info = None;
+            let swap_chain =
+                SwapChain::create_detached(&mut gfx.device, &mut gfx.context, access, size)
+                    .expect("Failed to create swap chain");
             Self {
                 cat,
                 receiver,
                 swap_chain,
-                info,
             }
         })
     }
 
     fn run(&mut self) {
-        while let Ok(msg) = self.receiver.recv() {
-            self.handle_msg(msg);
-        }
-        SURFMAN.with(|surfman| {
-            let (ref mut device, ref mut context) = &mut *surfman.borrow_mut();
-            self.swap_chain
-                .destroy(device, context)
-                .expect("Failed to destroy swap chain")
+        GFX.with(|gfx| {
+            let mut gfx = gfx.borrow_mut();
+            let gfx = &mut *gfx;
+            while let Ok(msg) = self.receiver.recv() {
+                self.handle_msg(&mut *gfx, msg);
+            }
         })
     }
 
-    fn handle_msg(&mut self, msg: MyGLMsg) {
+    fn handle_msg(&mut self, gfx: &mut MyGfx, msg: MyGLMsg) {
         match msg {
             MyGLMsg::GetSwapChain(sender) => {
                 let _ = sender.send(self.swap_chain.clone());
             }
-            MyGLMsg::SetVideoInfo(info) => {
-                self.info = Some(info);
+            MyGLMsg::Resize(size) => {
+                let _ = self
+                    .swap_chain
+                    .resize(&mut gfx.device, &mut gfx.context, size);
+            }
+            MyGLMsg::Heartbeat => {
+                gfx.device.make_context_current(&gfx.context).unwrap();
+                gfx.gl.clear_color(0.3, 0.3, 1.0, 0.0);
+                gfx.gl.clear(gl::COLOR_BUFFER_BIT);
+                gfx.device.make_no_context_current().unwrap();
+                self.swap_chain
+                    .swap_buffers(&mut gfx.device, &mut gfx.context);
             }
         }
+    }
+}
+
+impl Drop for MyGLThread {
+    fn drop(&mut self) {
+        GFX.with(|gfx| {
+            let mut gfx = gfx.borrow_mut();
+            let gfx = &mut *gfx;
+            self.swap_chain
+                .destroy(&mut gfx.device, &mut gfx.context)
+                .expect("Failed to destroy swap chain")
+        })
     }
 }
 
@@ -143,10 +190,12 @@ impl ObjectSubclass for MyGLSrc {
         let (acks, ackr) = crossbeam_channel::bounded(1);
         let _ = sender.send(MyGLMsg::GetSwapChain(acks));
         let swap_chain = ackr.recv().expect("Failed to get swap chain");
+        let info = Mutex::new(None);
         Self {
             cat,
             sender,
             swap_chain,
+            info,
         }
     }
 
@@ -188,9 +237,11 @@ impl BaseSrcImpl for MyGLSrc {
     fn set_caps(&self, src: &BaseSrc, outcaps: &Caps) -> Result<(), LoggableError> {
         let info = VideoInfo::from_caps(outcaps)
             .ok_or_else(|| gst_loggable_error!(self.cat, "Failed to get video info"))?;
+        let size = Size2D::new(info.height(), info.width()).to_i32();
         self.sender
-            .send(MyGLMsg::SetVideoInfo(info))
+            .send(MyGLMsg::Resize(size))
             .map_err(|_| gst_loggable_error!(self.cat, "Failed to send video info"))?;
+        *self.info.lock().unwrap() = Some(info);
         Ok(())
     }
 
@@ -201,69 +252,80 @@ impl BaseSrcImpl for MyGLSrc {
         _length: u32,
         buffer: &mut BufferRef,
     ) -> Result<FlowSuccess, FlowError> {
-        /*
-                let out_guard = self.out_info.lock().map_err(|_| {
-                    gst_element_error!(src, CoreError::Negotiation, ["Lock poisoned"]);
-                    FlowError::NotNegotiated
-                })?;
-                let out_info = out_guard.as_ref().ok_or_else(|| {
-                    gst_element_error!(src, CoreError::Negotiation, ["Caps not set yet"]);
-                    FlowError::NotNegotiated
-                })?;
-                gst_debug!(
-                    self.cat,
-                    obj: src,
-                    "Filling myglsrc buffer {:?}",
-                    buffer,
+        let guard = self.info.lock().map_err(|_| {
+            gst_element_error!(src, CoreError::Negotiation, ["Lock poisoned"]);
+            FlowError::NotNegotiated
+        })?;
+        let info = guard.as_ref().ok_or_else(|| {
+            gst_element_error!(src, CoreError::Negotiation, ["Caps not set yet"]);
+            FlowError::NotNegotiated
+        })?;
+        gst_debug!(self.cat, obj: src, "Filling myglsrc buffer {:?}", buffer,);
+        let mut frame = VideoFrameRef::from_buffer_ref_writable(buffer, info).ok_or_else(|| {
+            gst_element_error!(
+                src,
+                CoreError::Failed,
+                ["Failed to map output buffer writable"]
+            );
+            FlowError::Error
+        })?;
+        let height = frame.height() as i32;
+        let width = frame.width() as i32;
+        let stride = frame.plane_stride()[0] as usize;
+        let format = frame.format();
+        gst_debug!(
+            self.cat,
+            obj: src,
+            "Filling myglsrc buffer {}x{} {:?} {:?}",
+            width,
+            height,
+            format,
+            frame,
+        );
+        let data = frame.plane_data_mut(0).unwrap();
+
+        GFX.with(|gfx| {
+            let mut gfx = gfx.borrow_mut();
+            let gfx = &mut *gfx;
+            if let Some(surface) = self.swap_chain.take_surface() {
+                let surface_info = gfx.device.surface_info(&surface);
+                let surface_texture = gfx
+                    .device
+                    .create_surface_texture(&mut gfx.context, surface)
+                    .unwrap();
+                let texture_id = surface_texture.gl_texture();
+
+                gfx.device.make_context_current(&gfx.context).unwrap();
+
+                gfx.gl.framebuffer_texture_2d(
+                    gl::FRAMEBUFFER,
+                    gl::COLOR_ATTACHMENT0,
+                    gfx.device.surface_gl_texture_target(),
+                    texture_id,
+                    0,
                 );
-                let mut out_frame =
-                    VideoFrameRef::from_buffer_ref_writable(buffer, out_info).ok_or_else(|| {
-                        gst_element_error!(
-                            src,
-                            CoreError::Failed,
-                            ["Failed to map output buffer writable"]
-                        );
-                        FlowError::Error
-                    })?;
-                let height = out_frame.height() as usize;
-                let width = out_frame.width() as usize;
-                let stride = out_frame.plane_stride()[0] as usize;
-                let format = out_frame.format();
-                gst_debug!(
-                    self.cat,
-                    obj: src,
-                    "Filling myglsrc buffer {}x{} {:?} {:?}",
+                gfx.gl.viewport(0, 0, width, height);
+                gfx.gl.read_pixels_into_buffer(
+                    0,
+                    0,
                     width,
                     height,
-                    format,
-                    out_frame,
+                    gl::BGRA,
+                    gl::UNSIGNED_BYTE,
+                    data,
                 );
-                let data = out_frame.plane_data_mut(0).unwrap();
+                debug_assert_eq!(gfx.gl.get_error(), gl::NO_ERROR);
 
-                let millis = self.start.elapsed().subsec_millis();
-                let brightness = if millis < 500 {
-                    millis / 2
-                } else {
-                    (1000 - millis) / 2
-                } as u8;
+                gfx.device.make_no_context_current().unwrap();
 
-                if format == VideoFormat::Bgrx {
-                    assert_eq!(data.len() % 4, 0);
-                    let line_bytes = width * 4;
-                    assert!(line_bytes <= stride);
-
-                    for line in data.chunks_exact_mut(stride) {
-                        for pixel in line[..line_bytes].chunks_exact_mut(4) {
-                            pixel[0] = brightness;
-                            pixel[1] = brightness / 2;
-                            pixel[2] = brightness / 4;
-                            pixel[3] = 0;
-                        }
-                    }
-                } else {
-                    unimplemented!();
-                }
-        */
+                let surface = gfx
+                    .device
+                    .destroy_surface_texture(&mut gfx.context, surface_texture)
+                    .unwrap();
+                self.swap_chain.recycle_surface(surface);
+            }
+        });
+        let _ = self.sender.send(MyGLMsg::Heartbeat);
         Ok(FlowSuccess::Ok)
     }
 }
