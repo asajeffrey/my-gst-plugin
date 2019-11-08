@@ -288,14 +288,15 @@ impl BaseSrcImpl for MyGLSrc {
             let mut gfx = gfx.borrow_mut();
             let gfx = &mut *gfx;
             if let Some(surface) = self.swap_chain.take_surface() {
+                gfx.device.make_context_current(&gfx.context).unwrap();
+                gfx.gl.viewport(0, 0, width, height);
+
                 let surface_info = gfx.device.surface_info(&surface);
                 let surface_texture = gfx
                     .device
                     .create_surface_texture(&mut gfx.context, surface)
                     .unwrap();
                 let texture_id = surface_texture.gl_texture();
-
-                gfx.device.make_context_current(&gfx.context).unwrap();
 
                 gfx.gl.framebuffer_texture_2d(
                     gl::FRAMEBUFFER,
@@ -304,7 +305,6 @@ impl BaseSrcImpl for MyGLSrc {
                     texture_id,
                     0,
                 );
-                gfx.gl.viewport(0, 0, width, height);
                 gfx.gl.read_pixels_into_buffer(
                     0,
                     0,
@@ -314,7 +314,9 @@ impl BaseSrcImpl for MyGLSrc {
                     gl::UNSIGNED_BYTE,
                     data,
                 );
+
                 debug_assert_eq!(gfx.gl.get_error(), gl::NO_ERROR);
+                gst_debug!(self.cat, obj: src, "Read pixels {:?}", &data[..127]);
 
                 gfx.device.make_no_context_current().unwrap();
 
