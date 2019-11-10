@@ -131,6 +131,7 @@ struct MyGLThread {
     cat: DebugCategory,
     receiver: Receiver<MyGLMsg>,
     swap_chain: SwapChain,
+    start: Instant,
 }
 
 impl MyGLThread {
@@ -141,10 +142,12 @@ impl MyGLThread {
             let access = SurfaceAccess::GPUCPU;
             let swap_chain = SwapChain::create_attached(&mut gfx.device, &mut gfx.context, access)
                 .expect("Failed to create swap chain");
+            let start = Instant::now();
             Self {
                 cat,
                 receiver,
                 swap_chain,
+                start,
             }
         })
     }
@@ -170,8 +173,15 @@ impl MyGLThread {
                     .resize(&mut gfx.device, &mut gfx.context, size);
             }
             MyGLMsg::Heartbeat => {
+                let millis = self.start.elapsed().subsec_millis() as f32;
+                let brightness = if millis < 500.0 {
+                    millis / 500.0
+                } else {
+                    (1000.0 - millis) / 500.0
+                };
                 gfx.device.make_context_current(&gfx.context).unwrap();
-                gfx.gl.clear_color(0.3, 0.3, 1.0, 0.0);
+                gfx.gl
+                    .clear_color(0.3 * brightness, 0.3 * brightness, brightness, 0.0);
                 gfx.gl.clear(gl::COLOR_BUFFER_BIT);
                 gfx.device.make_no_context_current().unwrap();
                 self.swap_chain
