@@ -38,11 +38,13 @@ use gstreamer_video::VideoFrameRef;
 use gstreamer_video::VideoInfo;
 
 use sparkle::gl;
+use sparkle::gl::types::GLuint;
 use sparkle::gl::Gl;
 
 use surfman::platform::generic::universal::context::Context;
 use surfman::platform::generic::universal::device::Device;
 use surfman::SurfaceAccess;
+use surfman::SurfaceType;
 
 use surfman_chains::SwapChain;
 
@@ -63,6 +65,7 @@ struct MyGfx {
     device: Device,
     context: Context,
     gl: Rc<Gl>,
+    fbo: GLuint,
 }
 
 impl MyGfx {
@@ -77,15 +80,32 @@ impl MyGfx {
         let context = device
             .create_context(&descriptor)
             .expect("Failed to create context");
-        let device = Device::Hardware(device);
-        let context = Context::Hardware(context);
+        let mut device = Device::Hardware(device);
+        let mut context = Context::Hardware(context);
+        device.make_context_current(&context).unwrap();
+        let surface_type = SurfaceType::Generic {
+            size: Size2D::new(1, 1),
+        };
+        let surface = device
+            .create_surface(&mut context, SurfaceAccess::GPUCPU, &surface_type)
+            .expect("Failed to create surface");
+        device
+            .bind_surface_to_context(&mut context, surface)
+            .expect("Failed to bind surface");
         let gl = Gl::gl_fns(gl::ffi_gl::Gl::load_with(|s| {
             device.get_proc_address(&context, s)
         }));
+        gl.viewport(0, 0, 1, 1);
+        debug_assert_eq!(gl.get_error(), gl::NO_ERROR);
+
+        let fbo = gl.gen_framebuffers(1)[0];
+        debug_assert_eq!(gl.get_error(), gl::NO_ERROR);
+
         Self {
             device,
             context,
             gl,
+            fbo,
         }
     }
 }
@@ -119,10 +139,8 @@ impl MyGLThread {
             let mut gfx = gfx.borrow_mut();
             let gfx = &mut *gfx;
             let access = SurfaceAccess::GPUCPU;
-            let size = Size2D::new(500, 500);
-            let swap_chain =
-                SwapChain::create_detached(&mut gfx.device, &mut gfx.context, access, size)
-                    .expect("Failed to create swap chain");
+            let swap_chain = SwapChain::create_attached(&mut gfx.device, &mut gfx.context, access)
+                .expect("Failed to create swap chain");
             Self {
                 cat,
                 receiver,
@@ -289,7 +307,10 @@ impl BaseSrcImpl for MyGLSrc {
             let gfx = &mut *gfx;
             if let Some(surface) = self.swap_chain.take_surface() {
                 gfx.device.make_context_current(&gfx.context).unwrap();
+                debug_assert_eq!(gfx.gl.get_error(), gl::NO_ERROR);
+
                 gfx.gl.viewport(0, 0, width, height);
+                debug_assert_eq!(gfx.gl.get_error(), gl::NO_ERROR);
 
                 let surface_info = gfx.device.surface_info(&surface);
                 let surface_texture = gfx
@@ -298,6 +319,9 @@ impl BaseSrcImpl for MyGLSrc {
                     .unwrap();
                 let texture_id = surface_texture.gl_texture();
 
+                gfx.gl.bind_framebuffer(gl::FRAMEBUFFER, gfx.fbo);
+                debug_assert_eq!(gfx.gl.get_error(), gl::NO_ERROR);
+
                 gfx.gl.framebuffer_texture_2d(
                     gl::FRAMEBUFFER,
                     gl::COLOR_ATTACHMENT0,
@@ -305,6 +329,8 @@ impl BaseSrcImpl for MyGLSrc {
                     texture_id,
                     0,
                 );
+                debug_assert_eq!(gfx.gl.get_error(), gl::NO_ERROR);
+
                 gfx.gl.read_pixels_into_buffer(
                     0,
                     0,
@@ -314,7 +340,6 @@ impl BaseSrcImpl for MyGLSrc {
                     gl::UNSIGNED_BYTE,
                     data,
                 );
-
                 debug_assert_eq!(gfx.gl.get_error(), gl::NO_ERROR);
                 gst_debug!(self.cat, obj: src, "Read pixels {:?}", &data[..127]);
 
