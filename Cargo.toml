@@ -18,6 +18,7 @@ glib = { version = "0.8", features = ["subclassing"] }
 gstreamer = { version = "0.14", features = ["subclassing"] }
 gstreamer-base = { version = "0.14", features = ["subclassing"] }
 gstreamer-gl = { version = "0.14", features = ["v1_16"] }
+gstreamer-gl-sys = "0.8"
 gstreamer-video = { version = "0.14", features = ["subclassing"] }
 sparkle = "0.1"
 surfman = { version = "0.1", features = ["sm-osmesa"] }
