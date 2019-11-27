@@ -175,7 +175,7 @@ impl BaseSrcImpl for MyGLSrc {
         );
         assert_eq!(gl.get_error(), gl::NO_ERROR);
 
-        gl.clear_color(brightness, brightness, brightness, 0.0);
+        gl.clear_color(brightness, brightness, brightness, 1.0);
         gl.clear(gl::COLOR_BUFFER_BIT);
         assert_eq!(gl.get_error(), gl::NO_ERROR);
 
