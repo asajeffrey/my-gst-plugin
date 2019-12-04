@@ -34,6 +34,7 @@ use gstreamer_base::BaseSrcExt;
 use gstreamer_gl::GLContext;
 use gstreamer_gl::GLContextExt;
 use gstreamer_gl::GLContextExtManual;
+use gstreamer_gl_sys::gst_is_gl_memory;
 use gstreamer_gl_sys::GstGLMemory;
 use gstreamer_video::VideoInfo;
 
@@ -123,11 +124,15 @@ impl BaseSrcImpl for MyGLSrc {
             gst_element_error!(src, CoreError::Failed, ["Failed to get memory"]);
             FlowError::Error
         })?;
-        let gl_memory =
-            unsafe { (memory.into_ptr() as *mut GstGLMemory).as_ref() }.ok_or_else(|| {
-                gst_element_error!(src, CoreError::Failed, ["Memory is null"]);
-                FlowError::Error
-            })?;
+        let memory = unsafe { memory.into_ptr() };
+        if unsafe { gst_is_gl_memory(memory) } == 0 {
+            gst_element_error!(src, CoreError::Failed, ["Memory isn't GL memory"]);
+            return Err(FlowError::Error);
+        }
+        let gl_memory = unsafe { (memory as *mut GstGLMemory).as_ref() }.ok_or_else(|| {
+            gst_element_error!(src, CoreError::Failed, ["Memory is null"]);
+            FlowError::Error
+        })?;
 
         let gl_context = unsafe { GLContext::from_glib_borrow(gl_memory.mem.context) };
         let draw_texture_id = gl_memory.tex_id;
