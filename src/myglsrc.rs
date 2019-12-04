@@ -5,6 +5,7 @@ use glib::glib_bool_error;
 use glib::glib_object_impl;
 use glib::glib_object_subclass;
 use glib::object::Cast;
+use glib::object::ObjectType;
 use glib::subclass::object::ObjectImpl;
 use glib::subclass::object::ObjectImplExt;
 use glib::subclass::simple::ClassStruct;
@@ -16,13 +17,16 @@ use gstreamer::gst_loggable_error;
 use gstreamer::subclass::element::ElementClassSubclassExt;
 use gstreamer::subclass::element::ElementImpl;
 use gstreamer::subclass::ElementInstanceStruct;
-use gstreamer::BufferRef;
+use gstreamer::Buffer;
+use gstreamer::BufferPool;
+use gstreamer::BufferPoolExt;
+use gstreamer::BufferPoolExtManual;
 use gstreamer::Caps;
 use gstreamer::CoreError;
 use gstreamer::DebugCategory;
 use gstreamer::DebugColorFlags;
+use gstreamer::Element;
 use gstreamer::FlowError;
-use gstreamer::FlowSuccess;
 use gstreamer::Format;
 use gstreamer::LoggableError;
 use gstreamer::PadDirection;
@@ -52,6 +56,7 @@ const CAPS: &str = "video/x-raw(memory:GLMemory),
 pub struct MyGLSrc {
     cat: DebugCategory,
     start: Instant,
+    buffer_pool: Mutex<Option<BufferPool>>,
     out_info: Mutex<Option<VideoInfo>>,
 }
 
@@ -65,6 +70,7 @@ impl ObjectSubclass for MyGLSrc {
         Self {
             cat: DebugCategory::new("myglsrc", DebugColorFlags::empty(), Some("My glsrc by me")),
             start: Instant::now(),
+            buffer_pool: Mutex::new(None),
             out_info: Mutex::new(None),
         }
     }
@@ -110,16 +116,63 @@ impl BaseSrcImpl for MyGLSrc {
             .ok_or_else(|| gst_loggable_error!(self.cat, "Failed to get video info"))?;
         gst_debug!(self.cat, obj: src, "Configured for caps {}", outcaps);
         *self.out_info.lock().unwrap() = Some(out_info);
+
+        // Get the downstream GL context
+        let mut gst_gl_context = std::ptr::null_mut();
+        let el = src.upcast_ref::<Element>();
+        unsafe {
+            gstreamer_gl_sys::gst_gl_query_local_gl_context(
+                el.as_ptr(),
+                gstreamer_sys::GST_PAD_SRC,
+                &mut gst_gl_context,
+            );
+        }
+        if gst_gl_context.is_null() {
+            return Err(gst_loggable_error!(self.cat, "Failed to get GL context"));
+        }
+
+        // Create a new buffer pool for GL memory
+        let gst_gl_buffer_pool =
+            unsafe { gstreamer_gl_sys::gst_gl_buffer_pool_new(gst_gl_context) };
+        if gst_gl_buffer_pool.is_null() {
+            return Err(gst_loggable_error!(
+                self.cat,
+                "Failed to create buffer pool"
+            ));
+        }
+        let pool = unsafe { BufferPool::from_glib_borrow(gst_gl_buffer_pool) };
+
+        // Configure the buffer pool with the negotiated caps
+        let mut config = pool.get_config();
+        let (_, size, min_buffers, max_buffers) = config.get_params().unwrap_or((None, 0, 0, 1024));
+        config.set_params(Some(outcaps), size, min_buffers, max_buffers);
+        pool.set_config(config)
+            .map_err(|_| gst_loggable_error!(self.cat, "Failed to update config"))?;
+
+        // Save the buffer pool for later use
+        *self.buffer_pool.lock().expect("Poisoned lock") = Some(pool);
+
         Ok(())
     }
 
-    fn fill(
-        &self,
-        src: &BaseSrc,
-        _offset: u64,
-        _length: u32,
-        buffer: &mut BufferRef,
-    ) -> Result<FlowSuccess, FlowError> {
+    fn is_seekable(&self, _: &BaseSrc) -> bool {
+        false
+    }
+
+    fn create(&self, src: &BaseSrc, _offset: u64, _length: u32) -> Result<Buffer, FlowError> {
+        // Get the buffer pool
+        let pool_guard = self.buffer_pool.lock().unwrap();
+        let pool = pool_guard.as_ref().ok_or(FlowError::NotNegotiated)?;
+
+        // Activate the pool if necessary
+        if !pool.is_active() {
+            pool.set_active(true).map_err(|_| FlowError::Error)?;
+        }
+
+        // Get a buffer to fill
+        let buffer = pool.acquire_buffer(None)?;
+
+        // Get the GL memory from the buffer
         let memory = buffer.get_all_memory().ok_or_else(|| {
             gst_element_error!(src, CoreError::Failed, ["Failed to get memory"]);
             FlowError::Error
@@ -134,11 +187,13 @@ impl BaseSrcImpl for MyGLSrc {
             FlowError::Error
         })?;
 
+        // Get the data out of the memory
         let gl_context = unsafe { GLContext::from_glib_borrow(gl_memory.mem.context) };
         let draw_texture_id = gl_memory.tex_id;
         let height = gl_memory.info.height;
         let width = gl_memory.info.width;
 
+        // Get the GL bindings
         let gl = GL.with(|gl| {
             gl.borrow_mut()
                 .get_or_insert_with(|| {
@@ -188,6 +243,6 @@ impl BaseSrcImpl for MyGLSrc {
         gl.delete_framebuffers(&[draw_fbo]);
         assert_eq!(gl.get_error(), gl::NO_ERROR);
 
-        Ok(FlowSuccess::Ok)
+        Ok(buffer)
     }
 }
