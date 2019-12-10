@@ -29,6 +29,7 @@ use gstreamer::DebugColorFlags;
 use gstreamer::Element;
 use gstreamer::FlowError;
 use gstreamer::Format;
+use gstreamer::Fraction;
 use gstreamer::LoggableError;
 use gstreamer::PadDirection;
 use gstreamer::PadPresence;
@@ -45,8 +46,11 @@ use gstreamer_video::VideoInfo;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 const CAPS: &str = "video/x-raw(memory:GLMemory),
@@ -58,7 +62,9 @@ const CAPS: &str = "video/x-raw(memory:GLMemory),
 pub struct MyGLSrc {
     cat: DebugCategory,
     start: Instant,
-    frames: AtomicUsize,
+    frame_micros: AtomicU64,
+    next_frame_micros: AtomicU64,
+    frames: AtomicU64,
     buffer_pool: Mutex<Option<BufferPool>>,
     out_info: Mutex<Option<VideoInfo>>,
 }
@@ -73,7 +79,9 @@ impl ObjectSubclass for MyGLSrc {
         Self {
             cat: DebugCategory::new("myglsrc", DebugColorFlags::empty(), Some("My glsrc by me")),
             start: Instant::now(),
-            frames: AtomicUsize::new(0),
+            frame_micros: AtomicU64::new(16_667), // Default 60fps
+            next_frame_micros: AtomicU64::new(0),
+            frames: AtomicU64::new(0),
             buffer_pool: Mutex::new(None),
             out_info: Mutex::new(None),
         }
@@ -156,6 +164,20 @@ impl BaseSrcImpl for MyGLSrc {
         // Save the buffer pool for later use
         *self.buffer_pool.lock().expect("Poisoned lock") = Some(pool);
 
+        // Is the framerate set?
+        let framerate = outcaps
+            .get_structure(0)
+            .and_then(|cap| cap.get::<Fraction>("framerate"));
+        if let Some(framerate) = framerate {
+            let frame_micros = 1_000_000 * *framerate.denom() as u64 / *framerate.numer() as u64;
+            gst_debug!(
+                self.cat,
+                obj: src,
+                "Setting frame duration to {}micros",
+                frame_micros
+            );
+            self.frame_micros.store(frame_micros, Ordering::SeqCst);
+        }
         Ok(())
     }
 
@@ -164,6 +186,22 @@ impl BaseSrcImpl for MyGLSrc {
     }
 
     fn create(&self, src: &BaseSrc, _offset: u64, _length: u32) -> Result<Buffer, FlowError> {
+        // We block waiting for the next frame to be needed.
+        // Once get_times is in BaseSrcImpl, we can use that instead.
+        // It's been merged but not yet published.
+        // https://gitlab.freedesktop.org/gstreamer/gstreamer-rs/merge_requests/375
+        let elapsed_micros = self.start.elapsed().as_micros() as u64;
+        let frame_micros = self.frame_micros.load(Ordering::SeqCst);
+        let next_frame_micros = self
+            .next_frame_micros
+            .fetch_add(frame_micros, Ordering::SeqCst);
+        if elapsed_micros < next_frame_micros {
+            let delay = 1_000_000.min(next_frame_micros - elapsed_micros);
+            gst_debug!(self.cat, obj: src, "Waiting for {}micros", delay);
+            thread::sleep(Duration::from_micros(delay));
+            gst_debug!(self.cat, obj: src, "Done waiting");
+        }
+
         // Get the buffer pool
         let pool_guard = self.buffer_pool.lock().unwrap();
         let pool = pool_guard.as_ref().ok_or(FlowError::NotNegotiated)?;
@@ -247,12 +285,9 @@ impl BaseSrcImpl for MyGLSrc {
         gl.delete_framebuffers(&[draw_fbo]);
         assert_eq!(gl.get_error(), gl::NO_ERROR);
 
-        let frames = self
-            .frames
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let frames = self.frames.fetch_add(1, Ordering::SeqCst);
         if frames % 100 == 0 {
-            let millis = self.start.elapsed().as_millis();
-            let fps = (frames * 1000) / (millis as usize);
+            let fps = (frames * 1_000_000) / elapsed_micros;
             gst_info!(self.cat, obj: src, "fps = {}", fps);
         }
 
