@@ -13,6 +13,7 @@ use glib::subclass::types::ObjectSubclass;
 use glib::translate::FromGlibPtrBorrow;
 use gstreamer::gst_debug;
 use gstreamer::gst_element_error;
+use gstreamer::gst_info;
 use gstreamer::gst_loggable_error;
 use gstreamer::subclass::element::ElementClassSubclassExt;
 use gstreamer::subclass::element::ElementImpl;
@@ -44,6 +45,7 @@ use gstreamer_video::VideoInfo;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -56,6 +58,7 @@ const CAPS: &str = "video/x-raw(memory:GLMemory),
 pub struct MyGLSrc {
     cat: DebugCategory,
     start: Instant,
+    frames: AtomicUsize,
     buffer_pool: Mutex<Option<BufferPool>>,
     out_info: Mutex<Option<VideoInfo>>,
 }
@@ -70,6 +73,7 @@ impl ObjectSubclass for MyGLSrc {
         Self {
             cat: DebugCategory::new("myglsrc", DebugColorFlags::empty(), Some("My glsrc by me")),
             start: Instant::now(),
+            frames: AtomicUsize::new(0),
             buffer_pool: Mutex::new(None),
             out_info: Mutex::new(None),
         }
@@ -242,6 +246,15 @@ impl BaseSrcImpl for MyGLSrc {
         gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
         gl.delete_framebuffers(&[draw_fbo]);
         assert_eq!(gl.get_error(), gl::NO_ERROR);
+
+        let frames = self
+            .frames
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if frames % 100 == 0 {
+            let millis = self.start.elapsed().as_millis();
+            let fps = (frames * 1000) / (millis as usize);
+            gst_info!(self.cat, obj: src, "fps = {}", fps);
+        }
 
         Ok(buffer)
     }
