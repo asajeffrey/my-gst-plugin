@@ -40,11 +40,14 @@ use gstreamer_base::BaseSrcExt;
 use gstreamer_gl::GLContext;
 use gstreamer_gl::GLContextExt;
 use gstreamer_gl::GLContextExtManual;
+use gstreamer_gl_sys::gst_gl_context_thread_add;
 use gstreamer_gl_sys::gst_is_gl_memory;
+use gstreamer_gl_sys::GstGLContext;
 use gstreamer_gl_sys::GstGLMemory;
 use gstreamer_video::VideoInfo;
 
 use std::cell::RefCell;
+use std::ffi::c_void;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -229,8 +232,40 @@ impl BaseSrcImpl for MyGLSrc {
             FlowError::Error
         })?;
 
+        // Fill the buffer on the GL thread
+        let mut task = MyGLSrcTask {
+            my_gl_src: self,
+            src,
+            gl_memory,
+            done: false,
+        };
+        let data = &mut task as *mut MyGLSrcTask as *mut c_void;
+        unsafe { gst_gl_context_thread_add(gl_memory.mem.context, Some(execute_task), data) };
+        debug_assert!(task.done);
+
+        Ok(buffer)
+    }
+}
+
+struct MyGLSrcTask<'a> {
+    my_gl_src: &'a MyGLSrc,
+    src: &'a BaseSrc,
+    gl_memory: &'a GstGLMemory,
+    done: bool,
+}
+
+unsafe extern "C" fn execute_task(context: *mut GstGLContext, data: *mut c_void) {
+    let task = &mut *(data as *mut MyGLSrcTask);
+    let gl_context = GLContext::from_glib_borrow(context);
+    task.my_gl_src
+        .fill_gl_memory(task.src, gl_context, task.gl_memory);
+    task.done = true;
+}
+
+impl MyGLSrc {
+    // Runs on the GL thread
+    fn fill_gl_memory(&self, src: &BaseSrc, gl_context: GLContext, gl_memory: &GstGLMemory) {
         // Get the data out of the memory
-        let gl_context = unsafe { GLContext::from_glib_borrow(gl_memory.mem.context) };
         let draw_texture_id = gl_memory.tex_id;
         let height = gl_memory.info.height;
         let width = gl_memory.info.width;
@@ -287,10 +322,9 @@ impl BaseSrcImpl for MyGLSrc {
 
         let frames = self.frames.fetch_add(1, Ordering::SeqCst);
         if frames % 100 == 0 {
+            let elapsed_micros = self.start.elapsed().as_micros() as u64;
             let fps = (frames * 1_000_000) / elapsed_micros;
             gst_info!(self.cat, obj: src, "fps = {}", fps);
         }
-
-        Ok(buffer)
     }
 }
